@@ -28,6 +28,7 @@ tracing = { version = "0.1", optional = true }
 
 # ui (dioxus, wasm-safe)
 dioxus = { version = "0.8.0-alpha.0", optional = true }
-# Resolves against the superproject that mounts common/ (web-agency has a
-# design/ submodule; mac-mgmt symlinks design -> memvault/plan-ai-design).
+# Resolves against web-agency's design/ submodule (sibling of common/).
+# mac-mgmt excludes this crate from its workspace — web-agency is the only
+# consumer, so the path only needs to work there.
 plan-ai-design = { path = "../../design", optional = true }
