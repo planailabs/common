@@ -226,19 +226,35 @@ impl ChatStore for PgChatStore {
         terminal: bool,
         state_data: &serde_json::Value,
     ) -> Result<()> {
-        let completed_at: Option<DateTime<Utc>> = if terminal { Some(Utc::now()) } else { None };
-        sqlx::query(&format!(
-            "UPDATE {} \
-             SET state = $1, state_data = $2, updated_at = now(), completed_at = COALESCE($3, completed_at) \
-             WHERE id = $4",
-            self.t.sessions
-        ))
-        .bind(new_state)
-        .bind(state_data)
-        .bind(completed_at)
-        .bind(session_id)
-        .execute(&self.pool)
-        .await?;
+        // Terminal: stamp completed_at (keeping the first completion time).
+        // Non-terminal: clear it — sessions can resume out of "completed"
+        // (interactive idle-parking), and a stale timestamp would linger.
+        if terminal {
+            sqlx::query(&format!(
+                "UPDATE {} \
+                 SET state = $1, state_data = $2, updated_at = now(), \
+                     completed_at = COALESCE(completed_at, now()) \
+                 WHERE id = $3",
+                self.t.sessions
+            ))
+            .bind(new_state)
+            .bind(state_data)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        } else {
+            sqlx::query(&format!(
+                "UPDATE {} \
+                 SET state = $1, state_data = $2, updated_at = now(), completed_at = NULL \
+                 WHERE id = $3",
+                self.t.sessions
+            ))
+            .bind(new_state)
+            .bind(state_data)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        }
 
         self.append_state_change(session_id, new_state, state_data)
             .await;

@@ -95,7 +95,17 @@ impl SessionManager {
     /// Register a session's control handles before building its
     /// [`SessionSpec`] (tools need the event/notify handles). Must be
     /// followed by [`Self::run_detached`] or [`Self::unregister`].
-    pub fn register(&self, session_id: Uuid) -> SessionHandles {
+    ///
+    /// Fails if the session already has a running agent — registration is the
+    /// atomic guard against concurrent spawns racing each other (two racing
+    /// launches would otherwise both start an agent for the same session).
+    pub fn register(&self, session_id: Uuid) -> Result<SessionHandles> {
+        let entry = match self.inner.running.entry(session_id) {
+            dashmap::mapref::entry::Entry::Occupied(_) => {
+                anyhow::bail!("session {session_id} already has a running agent")
+            }
+            dashmap::mapref::entry::Entry::Vacant(v) => v,
+        };
         let cancel = CancellationToken::new();
         let pause_notify = Arc::new(tokio::sync::Notify::new());
         let approval_notify = Arc::new(tokio::sync::Notify::new());
@@ -118,15 +128,12 @@ impl SessionManager {
             running_tools,
             approval_broker,
         };
-        self.inner.running.insert(
-            session_id,
-            RunningEntry {
-                handles: handles.clone(),
-                user_tx,
-                user_rx: std::sync::Mutex::new(Some(user_rx)),
-            },
-        );
-        handles
+        entry.insert(RunningEntry {
+            handles: handles.clone(),
+            user_tx,
+            user_rx: std::sync::Mutex::new(Some(user_rx)),
+        });
+        Ok(handles)
     }
 
     /// Remove a registered session that never started (spec build failed).
