@@ -224,7 +224,6 @@ pub(crate) async fn run_session(
         let events_tx_after_tool = events_tx.clone();
         let running_tools_after = running_tools.clone();
         let validation_history_after = spec.validation_history.clone();
-        let events_tx_stream = events_tx.clone();
 
         builder
             .system_prompt(spec.system_prompt)
@@ -255,21 +254,12 @@ pub(crate) async fn run_session(
                     Ok(())
                 })
             })
-            .on_stream(move |_agent, response| {
-                let events_tx = events_tx_stream.clone();
-                let delta = response
-                    .delta
-                    .as_ref()
-                    .and_then(|d| d.message_chunk.clone());
-                Box::pin(async move {
-                    if let Some(delta) = delta {
-                        if !delta.is_empty() {
-                            let _ = events_tx.send(ChatEvent::StreamDelta { delta });
-                        }
-                    }
-                    Ok(())
-                })
-            })
+            // NOTE: deliberately no .on_stream hook — registering one silently
+            // flips the agent into streaming completions, and some
+            // OpenAI-compatible gateways repeat the FULL tool-call arguments
+            // in every stream chunk, which swiftide's accumulator concatenates
+            // into invalid JSON ("{}{}"). ChatEvent::StreamDelta stays reserved
+            // for when token streaming is actually rendered.
             .before_tool(move |_agent, tool_call| {
                 let events_tx = events_tx_before_tool.clone();
                 let running_tools = running_tools_before.clone();
