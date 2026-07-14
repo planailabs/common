@@ -80,8 +80,9 @@ pub fn registry_tools<S: Clone + Send + Sync + 'static>(
         }
         let risk: ToolRisk = ep.risk().into();
 
-        let schema_value =
+        let mut schema_value =
             inline_defs(&serde_json::Value::Object(ep.input_schema.clone().into_iter().collect()));
+        sanitize_for_strict(&mut schema_value);
         let parameters_schema: Option<schemars::Schema> =
             serde_json::from_value(schema_value).ok();
 
@@ -194,6 +195,54 @@ fn cap_output(text: String, max: usize) -> String {
         cut,
         text.len()
     )
+}
+
+/// OpenAI strict tool schemas (enforced by swiftide's OpenAI adapter) reject
+/// `oneOf` and array-valued `type` (e.g. schemars' `["string","null"]` for
+/// `Option<T>`, or enum variants). Rewrite both into the equivalent — and
+/// accepted — `anyOf` form.
+fn sanitize_for_strict(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let Some(one_of) = m.remove("oneOf") {
+                match m.get_mut("anyOf") {
+                    Some(serde_json::Value::Array(existing)) => {
+                        if let serde_json::Value::Array(add) = one_of {
+                            existing.extend(add);
+                        }
+                    }
+                    _ => {
+                        m.insert("anyOf".to_string(), one_of);
+                    }
+                }
+            }
+            if let Some(serde_json::Value::Array(types)) = m.get("type").cloned() {
+                m.remove("type");
+                let variants: Vec<serde_json::Value> = types
+                    .into_iter()
+                    .map(|t| serde_json::json!({ "type": t }))
+                    .collect();
+                match m.get_mut("anyOf") {
+                    Some(serde_json::Value::Array(existing)) => existing.extend(variants),
+                    _ => {
+                        m.insert(
+                            "anyOf".to_string(),
+                            serde_json::Value::Array(variants),
+                        );
+                    }
+                }
+            }
+            for (_, val) in m.iter_mut() {
+                sanitize_for_strict(val);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for x in a {
+                sanitize_for_strict(x);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Recursively inline `#/$defs/*` references so weaker models (and providers
@@ -320,6 +369,31 @@ mod tests {
         // Must terminate; deep refs stay as $ref at the depth bound.
         let flat = inline_defs(&schema);
         assert!(flat["properties"]["node"]["type"] == "object");
+    }
+
+    #[test]
+    fn sanitize_rewrites_oneof_and_type_unions() {
+        // serde enum → oneOf; Option<String> → type: ["string","null"]
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "context": {
+                    "oneOf": [
+                        { "type": "object", "properties": { "kind": { "type": "string" } } },
+                        { "type": "string" }
+                    ]
+                },
+                "label": { "type": ["string", "null"] }
+            }
+        });
+        sanitize_for_strict(&mut schema);
+        let ctx = &schema["properties"]["context"];
+        assert!(ctx.get("oneOf").is_none());
+        assert_eq!(ctx["anyOf"].as_array().unwrap().len(), 2);
+        let label = &schema["properties"]["label"];
+        assert!(label.get("type").is_none());
+        assert_eq!(label["anyOf"][0]["type"], "string");
+        assert_eq!(label["anyOf"][1]["type"], "null");
     }
 
     #[test]
