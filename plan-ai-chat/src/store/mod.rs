@@ -5,6 +5,8 @@
 //! domain-specific extension traits on top (the healer does both).
 
 #[cfg(feature = "postgres")]
+pub mod migrations;
+#[cfg(feature = "postgres")]
 pub mod pg;
 
 use std::sync::Arc;
