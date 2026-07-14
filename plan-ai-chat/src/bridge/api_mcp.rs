@@ -232,6 +232,12 @@ fn sanitize_for_strict(v: &mut serde_json::Value) {
                     }
                 }
             }
+            // OpenAI requires array schemas to declare `items`.
+            if m.get("type").and_then(|t| t.as_str()) == Some("array")
+                && !m.contains_key("items")
+            {
+                m.insert("items".to_string(), serde_json::json!({}));
+            }
             for (_, val) in m.iter_mut() {
                 sanitize_for_strict(val);
             }
@@ -394,6 +400,33 @@ mod tests {
         assert!(label.get("type").is_none());
         assert_eq!(label["anyOf"][0]["type"], "string");
         assert_eq!(label["anyOf"][1]["type"], "null");
+    }
+
+    #[test]
+    fn sanitize_adds_missing_array_items() {
+        // schemars for serde_json::Value emits bare {"type":"array"} variants.
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "source_config": {
+                    "anyOf": [
+                        { "type": "object" },
+                        { "type": "array" },
+                        { "type": ["array", "null"] }
+                    ]
+                }
+            }
+        });
+        sanitize_for_strict(&mut schema);
+        let variants = schema["properties"]["source_config"]["anyOf"]
+            .as_array()
+            .unwrap();
+        assert_eq!(variants[1]["items"], serde_json::json!({}));
+        // The type-union variant was rewritten into nested anyOf; its array
+        // member must also carry items.
+        let nested = variants[2]["anyOf"].as_array().unwrap();
+        assert_eq!(nested[0]["type"], "array");
+        assert_eq!(nested[0]["items"], serde_json::json!({}));
     }
 
     #[test]
