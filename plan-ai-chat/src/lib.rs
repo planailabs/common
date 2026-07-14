@@ -283,6 +283,15 @@ impl SessionManager {
             .resolve(approval_id, decision, by)
     }
 
+    /// Whether the standing "approve all for this session" grant is active.
+    /// None if the session is not running.
+    pub fn approve_all(&self, session_id: Uuid) -> Option<bool> {
+        self.inner
+            .running
+            .get(&session_id)
+            .map(|entry| entry.handles.approval_broker.approve_all())
+    }
+
     /// Set (or clear) the standing "approve all for this session" grant.
     pub fn set_approve_all(&self, session_id: Uuid, value: bool) -> Result<()> {
         let entry = self
