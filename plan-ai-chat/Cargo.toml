@@ -1,0 +1,42 @@
+[package]
+name = "plan-ai-chat"
+version = "0.1.0"
+edition = "2024"
+description = "Generic LLM agent-chat infrastructure: sessions, messages, pinning, state machine, tool risk validation, human approval, spend tracking"
+
+# NOTE for the shared `common` submodule: this crate depends on swiftide, which
+# both superprojects must patch to the mkg20001/swiftide `mac-mgmt-patches`
+# branch via [patch.crates-io]. Do NOT add this crate as a workspace member in a
+# superproject that lacks that patch block (same mechanism as plan-ai-actions
+# being excluded from mac-mgmt).
+
+[features]
+default = []
+# Postgres-backed ChatStore (table names configurable via PgTables).
+postgres = ["dep:sqlx"]
+# MCP helpers: Context7 connector + Anthropic-safe tool renaming for MCP toolboxes.
+mcp = ["swiftide/mcp", "dep:rmcp"]
+# Bridge that exposes plan-ai-api-mcp Registry endpoints as swiftide tools.
+api-mcp = ["dep:plan-ai-api-mcp"]
+
+[dependencies]
+swiftide = { version = "0.32.1", default-features = false, features = ["ollama", "anthropic", "openai", "swiftide-agents"] }
+async-openai = ">=0.33"
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider"], optional = true }
+plan-ai-api-mcp = { path = "../plan-ai-api-mcp", optional = true }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"], optional = true }
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+dashmap = "6"
+reqwest = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1.2", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+anyhow = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

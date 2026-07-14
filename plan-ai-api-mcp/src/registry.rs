@@ -269,6 +269,12 @@ impl<S: Clone + Send + Sync + 'static> Registry<S> {
         self.endpoints.iter().map(|e| e.tool_name()).collect()
     }
 
+    /// All registered endpoints, in registration order — for building
+    /// alternative frontends (e.g. exposing endpoints as LLM agent tools).
+    pub fn endpoints(&self) -> &[Arc<ErasedEndpoint<S>>] {
+        &self.endpoints
+    }
+
     /// Dispatch a registered endpoint by MCP tool name with an already-resolved
     /// principal — the in-process equivalent of an HTTP or MCP call. Authorization
     /// still happens inside the handler, driven by the given principal.
