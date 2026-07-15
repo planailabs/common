@@ -9,6 +9,9 @@
 //!   [`manager::RunManager`] job queue.
 //! - `ui` (feature `ui`): Dioxus components — parameter form, live run
 //!   progress view, run report viewer.
+//! - `migrations` (feature `postgres`): self-contained sqlx migrations for
+//!   the `action_template_runs` table hosts back their [`manager::RunStore`]
+//!   with.
 
 pub mod report;
 pub mod spec;
@@ -17,6 +20,8 @@ pub mod spec;
 pub mod engine;
 #[cfg(feature = "engine")]
 pub mod manager;
+#[cfg(feature = "postgres")]
+pub mod migrations;
 
 #[cfg(feature = "ui")]
 pub mod ui;
