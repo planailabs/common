@@ -14,6 +14,7 @@
 
 pub mod connector;
 pub mod model;
+pub mod models;
 pub mod session_loop;
 pub mod spend;
 pub mod state;
