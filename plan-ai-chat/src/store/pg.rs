@@ -1,7 +1,11 @@
-//! Postgres-backed implementation of [`ChatStore`] with configurable table
-//! and column names, so existing domain tables (e.g. the healer's
-//! `healer_sessions`/`healer_messages`/`healer_token_events`) are reused
-//! without migration.
+//! Postgres-backed implementation of [`ChatStore`] over the unified
+//! `chat_sessions`/`chat_messages`/`chat_token_events` tables.
+//!
+//! One store instance serves one domain, selected by the `session_type`
+//! discriminator ('chat', 'healer', ...): `create_session` stamps it and the
+//! cross-session queries (`list_sessions`, `find_resumable`,
+//! `has_running_session`) filter by it. By-id lookups don't filter — session
+//! ids are unique across types.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,57 +16,22 @@ use uuid::Uuid;
 use super::{ChatStore, NewSession};
 use crate::model::{ChatMessage, ChatSession};
 
-/// Table/column names for a chat store. All values are static configuration
-/// baked in at construction — never user input (SQL is built via `format!`).
-#[derive(Debug, Clone)]
-pub struct PgTables {
-    pub sessions: &'static str,
-    pub messages: &'static str,
-    pub token_events: &'static str,
-    /// Column on the sessions table holding [`ChatSession::scope_id`].
-    pub scope_col: &'static str,
-    /// Column on the sessions table holding [`ChatSession::subject`].
-    pub subject_col: &'static str,
-    /// Column on the sessions table holding [`ChatSession::initial_context`].
-    pub initial_context_col: &'static str,
-}
+const SESSION_SELECT: &str = "SELECT id, scope_id, subject, state, state_data, created_by, \
+            created_at, updated_at, completed_at, error_message, \
+            initial_context, provider, model, label \
+     FROM chat_sessions";
 
-impl PgTables {
-    /// Generic chat tables (used by new consumers; see the chatbot migration).
-    pub fn chat() -> Self {
-        Self {
-            sessions: "chat_sessions",
-            messages: "chat_messages",
-            token_events: "chat_token_events",
-            scope_col: "scope_id",
-            subject_col: "subject",
-            initial_context_col: "initial_context",
-        }
-    }
-
-    /// The healer's original tables (zero-migration adoption).
-    pub fn healer() -> Self {
-        Self {
-            sessions: "healer_sessions",
-            messages: "healer_messages",
-            token_events: "healer_token_events",
-            scope_col: "cluster_id",
-            subject_col: "instance_id",
-            initial_context_col: "initial_issues",
-        }
-    }
-}
-
-/// [`ChatStore`] backed by a Postgres connection pool.
+/// [`ChatStore`] backed by a Postgres connection pool, scoped to one
+/// `session_type`.
 #[derive(Clone)]
 pub struct PgChatStore {
     pool: PgPool,
-    t: PgTables,
+    session_type: &'static str,
 }
 
 impl PgChatStore {
-    pub fn new(pool: PgPool, tables: PgTables) -> Self {
-        Self { pool, t: tables }
+    pub fn new(pool: PgPool, session_type: &'static str) -> Self {
+        Self { pool, session_type }
     }
 
     /// Return the underlying pool (escape hatch for callers that still need it).
@@ -70,21 +39,9 @@ impl PgChatStore {
         &self.pool
     }
 
-    pub fn tables(&self) -> &PgTables {
-        &self.t
-    }
-
-    fn session_select(&self) -> String {
-        format!(
-            "SELECT id, {scope} AS scope_id, {subject} AS subject, state, state_data, created_by, \
-                    created_at, updated_at, completed_at, error_message, \
-                    {ctx} AS initial_context, provider, model, label \
-             FROM {sessions}",
-            scope = self.t.scope_col,
-            subject = self.t.subject_col,
-            ctx = self.t.initial_context_col,
-            sessions = self.t.sessions,
-        )
+    /// The `session_type` this store instance reads and writes.
+    pub fn session_type(&self) -> &'static str {
+        self.session_type
     }
 
     /// Persist a `state_change` message to the session chat log.
@@ -103,10 +60,10 @@ impl PgChatStore {
             "reason": reason,
         })
         .to_string();
-        let _ = sqlx::query(&format!(
-            "INSERT INTO {} (session_id, role, content, metadata) VALUES ($1, $2, $3, $4)",
-            self.t.messages
-        ))
+        let _ = sqlx::query(
+            "INSERT INTO chat_messages (session_id, role, content, metadata) \
+             VALUES ($1, $2, $3, $4)",
+        )
         .bind(session_id)
         .bind("state_change")
         .bind(&content)
@@ -185,15 +142,12 @@ impl From<MessageRow> for ChatMessage {
 #[async_trait]
 impl ChatStore for PgChatStore {
     async fn create_session(&self, new: NewSession<'_>) -> Result<Uuid> {
-        let id = sqlx::query_scalar::<_, Uuid>(&format!(
-            "INSERT INTO {sessions} ({scope}, {subject}, state, state_data, created_by, {ctx}, provider, model, label) \
-             VALUES ($1, $2, 'created', $3, $4, $5, $6, $7, $8) \
+        let id = sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO chat_sessions (scope_id, subject, state, state_data, created_by, \
+                                        initial_context, provider, model, label, session_type) \
+             VALUES ($1, $2, 'created', $3, $4, $5, $6, $7, $8, $9) \
              RETURNING id",
-            sessions = self.t.sessions,
-            scope = self.t.scope_col,
-            subject = self.t.subject_col,
-            ctx = self.t.initial_context_col,
-        ))
+        )
         .bind(new.scope_id)
         .bind(new.subject)
         .bind(new.state_data)
@@ -202,20 +156,18 @@ impl ChatStore for PgChatStore {
         .bind(new.provider)
         .bind(new.model)
         .bind(new.label)
+        .bind(self.session_type)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
     }
 
     async fn set_label(&self, session_id: Uuid, label: &str) -> Result<()> {
-        sqlx::query(&format!(
-            "UPDATE {} SET label = $1 WHERE id = $2",
-            self.t.sessions
-        ))
-        .bind(label)
-        .bind(session_id)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE chat_sessions SET label = $1 WHERE id = $2")
+            .bind(label)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -230,25 +182,23 @@ impl ChatStore for PgChatStore {
         // Non-terminal: clear it — sessions can resume out of "completed"
         // (interactive idle-parking), and a stale timestamp would linger.
         if terminal {
-            sqlx::query(&format!(
-                "UPDATE {} \
+            sqlx::query(
+                "UPDATE chat_sessions \
                  SET state = $1, state_data = $2, updated_at = now(), \
                      completed_at = COALESCE(completed_at, now()) \
                  WHERE id = $3",
-                self.t.sessions
-            ))
+            )
             .bind(new_state)
             .bind(state_data)
             .bind(session_id)
             .execute(&self.pool)
             .await?;
         } else {
-            sqlx::query(&format!(
-                "UPDATE {} \
+            sqlx::query(
+                "UPDATE chat_sessions \
                  SET state = $1, state_data = $2, updated_at = now(), completed_at = NULL \
                  WHERE id = $3",
-                self.t.sessions
-            ))
+            )
             .bind(new_state)
             .bind(state_data)
             .bind(session_id)
@@ -267,13 +217,12 @@ impl ChatStore for PgChatStore {
         error_message: &str,
         state_data: &serde_json::Value,
     ) -> Result<()> {
-        sqlx::query(&format!(
-            "UPDATE {} \
+        sqlx::query(
+            "UPDATE chat_sessions \
              SET state = 'failed', state_data = $1, error_message = $2, \
                  updated_at = now(), completed_at = now() \
              WHERE id = $3",
-            self.t.sessions
-        ))
+        )
         .bind(state_data)
         .bind(error_message)
         .bind(session_id)
@@ -287,7 +236,7 @@ impl ChatStore for PgChatStore {
 
     async fn get_session(&self, session_id: Uuid) -> Result<Option<ChatSession>> {
         let row =
-            sqlx::query_as::<_, SessionRow>(&format!("{} WHERE id = $1", self.session_select()))
+            sqlx::query_as::<_, SessionRow>(&format!("{SESSION_SELECT} WHERE id = $1"))
                 .bind(session_id)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -296,11 +245,11 @@ impl ChatStore for PgChatStore {
 
     async fn list_sessions(&self, scope_id: Uuid) -> Result<Vec<ChatSession>> {
         let rows = sqlx::query_as::<_, SessionRow>(&format!(
-            "{} WHERE {} = $1 ORDER BY created_at DESC LIMIT 100",
-            self.session_select(),
-            self.t.scope_col
+            "{SESSION_SELECT} WHERE scope_id = $1 AND session_type = $2 \
+             ORDER BY created_at DESC LIMIT 100"
         ))
         .bind(scope_id)
+        .bind(self.session_type)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
@@ -314,11 +263,12 @@ impl ChatStore for PgChatStore {
         let states: Vec<String> = non_resumable.iter().map(|s| s.to_string()).collect();
         let creators: Vec<String> = exclude_created_by.iter().map(|s| s.to_string()).collect();
         let rows = sqlx::query_as::<_, SessionRow>(&format!(
-            "{} WHERE state != ALL($1) AND created_by != ALL($2) ORDER BY created_at ASC",
-            self.session_select()
+            "{SESSION_SELECT} WHERE state != ALL($1) AND created_by != ALL($2) \
+             AND session_type = $3 ORDER BY created_at ASC"
         ))
         .bind(&states)
         .bind(&creators)
+        .bind(self.session_type)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
@@ -330,26 +280,24 @@ impl ChatStore for PgChatStore {
         provider: &str,
         model: &str,
     ) -> Result<()> {
-        sqlx::query(&format!(
-            "UPDATE {} SET provider = $1, model = $2 WHERE id = $3",
-            self.t.sessions
-        ))
-        .bind(provider)
-        .bind(model)
-        .bind(session_id)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE chat_sessions SET provider = $1, model = $2 WHERE id = $3")
+            .bind(provider)
+            .bind(model)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     async fn has_running_session(&self, subject: &str, inactive_states: &[&str]) -> Result<bool> {
         let states: Vec<String> = inactive_states.iter().map(|s| s.to_string()).collect();
-        Ok(sqlx::query_scalar::<_, bool>(&format!(
-            "SELECT EXISTS(SELECT 1 FROM {} WHERE {} = $1 AND state != ALL($2))",
-            self.t.sessions, self.t.subject_col
-        ))
+        Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM chat_sessions \
+             WHERE subject = $1 AND state != ALL($2) AND session_type = $3)",
+        )
         .bind(subject)
         .bind(&states)
+        .bind(self.session_type)
         .fetch_one(&self.pool)
         .await
         .unwrap_or(false))
@@ -364,10 +312,10 @@ impl ChatStore for PgChatStore {
         content: &str,
         metadata: Option<&serde_json::Value>,
     ) -> Result<()> {
-        sqlx::query(&format!(
-            "INSERT INTO {} (session_id, role, content, metadata) VALUES ($1, $2, $3, $4)",
-            self.t.messages
-        ))
+        sqlx::query(
+            "INSERT INTO chat_messages (session_id, role, content, metadata) \
+             VALUES ($1, $2, $3, $4)",
+        )
         .bind(session_id)
         .bind(role)
         .bind(content)
@@ -378,11 +326,10 @@ impl ChatStore for PgChatStore {
     }
 
     async fn get_messages(&self, session_id: Uuid) -> Result<Vec<ChatMessage>> {
-        let rows = sqlx::query_as::<_, MessageRow>(&format!(
+        let rows = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, metadata, created_at \
-             FROM {} WHERE session_id = $1 ORDER BY created_at ASC",
-            self.t.messages
-        ))
+             FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC",
+        )
         .bind(session_id)
         .fetch_all(&self.pool)
         .await?;
@@ -394,11 +341,11 @@ impl ChatStore for PgChatStore {
         session_id: Uuid,
         after: DateTime<Utc>,
     ) -> Result<Vec<ChatMessage>> {
-        let rows = sqlx::query_as::<_, MessageRow>(&format!(
+        let rows = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, metadata, created_at \
-             FROM {} WHERE session_id = $1 AND created_at > $2 ORDER BY created_at ASC",
-            self.t.messages
-        ))
+             FROM chat_messages WHERE session_id = $1 AND created_at > $2 \
+             ORDER BY created_at ASC",
+        )
         .bind(session_id)
         .bind(after)
         .fetch_all(&self.pool)
@@ -417,11 +364,10 @@ impl ChatStore for PgChatStore {
         output_tokens: u32,
     ) -> Result<u64> {
         let total = (input_tokens + output_tokens) as i64;
-        sqlx::query(&format!(
-            "INSERT INTO {} (session_id, provider, model, input_tokens, output_tokens) \
+        sqlx::query(
+            "INSERT INTO chat_token_events (session_id, provider, model, input_tokens, output_tokens) \
              VALUES ($1, $2, $3, $4, $5)",
-            self.t.token_events
-        ))
+        )
         .bind(session_id)
         .bind(provider)
         .bind(model)
@@ -430,10 +376,10 @@ impl ChatStore for PgChatStore {
         .execute(&self.pool)
         .await?;
 
-        let new_total: i64 = sqlx::query_scalar(&format!(
-            "UPDATE {} SET tokens_used = tokens_used + $1 WHERE id = $2 RETURNING tokens_used",
-            self.t.sessions
-        ))
+        let new_total: i64 = sqlx::query_scalar(
+            "UPDATE chat_sessions SET tokens_used = tokens_used + $1 WHERE id = $2 \
+             RETURNING tokens_used",
+        )
         .bind(total)
         .bind(session_id)
         .fetch_one(&self.pool)
@@ -443,36 +389,27 @@ impl ChatStore for PgChatStore {
     }
 
     async fn get_token_usage(&self, session_id: Uuid) -> Result<u64> {
-        let used: i64 = sqlx::query_scalar(&format!(
-            "SELECT tokens_used FROM {} WHERE id = $1",
-            self.t.sessions
-        ))
-        .bind(session_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let used: i64 = sqlx::query_scalar("SELECT tokens_used FROM chat_sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(&self.pool)
+            .await?;
         Ok(used as u64)
     }
 
     async fn set_token_budget(&self, session_id: Uuid, budget: u64) -> Result<()> {
-        sqlx::query(&format!(
-            "UPDATE {} SET token_budget = $1 WHERE id = $2",
-            self.t.sessions
-        ))
-        .bind(budget as i64)
-        .bind(session_id)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE chat_sessions SET token_budget = $1 WHERE id = $2")
+            .bind(budget as i64)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     async fn get_token_budget(&self, session_id: Uuid) -> Result<u64> {
-        let budget: i64 = sqlx::query_scalar(&format!(
-            "SELECT token_budget FROM {} WHERE id = $1",
-            self.t.sessions
-        ))
-        .bind(session_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let budget: i64 = sqlx::query_scalar("SELECT token_budget FROM chat_sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(&self.pool)
+            .await?;
         Ok(budget as u64)
     }
 }

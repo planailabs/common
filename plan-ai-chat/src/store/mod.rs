@@ -1,8 +1,9 @@
 //! Abstract session/message/token store for chat sessions.
 //!
-//! Domain crates either use [`pg::PgChatStore`] directly (with their table
-//! names via [`pg::PgTables`]) or implement [`ChatStore`] themselves and add
-//! domain-specific extension traits on top (the healer does both).
+//! Domain crates either use [`pg::PgChatStore`] directly (scoped to their
+//! `session_type` in the unified chat tables) or implement [`ChatStore`]
+//! themselves and add domain-specific extension traits on top (the healer
+//! does both).
 
 #[cfg(feature = "postgres")]
 pub mod migrations;

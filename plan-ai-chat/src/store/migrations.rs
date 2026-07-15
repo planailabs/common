@@ -9,10 +9,16 @@ use anyhow::{Context as _, Result};
 use sqlx::PgPool;
 
 /// Ordered, append-only migration list. Names must be unique and stable.
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "0001_chat_core",
-    include_str!("../../migrations/0001_chat_core.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0001_chat_core",
+        include_str!("../../migrations/0001_chat_core.sql"),
+    ),
+    (
+        "0002_session_type",
+        include_str!("../../migrations/0002_session_type.sql"),
+    ),
+];
 
 /// Apply all pending chat migrations. Idempotent; safe to run at every startup.
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
