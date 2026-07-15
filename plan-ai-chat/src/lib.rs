@@ -25,6 +25,9 @@ pub mod validation;
 #[cfg(feature = "api-mcp")]
 pub mod bridge;
 
+#[cfg(all(feature = "postgres", feature = "api-mcp"))]
+pub mod service;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
