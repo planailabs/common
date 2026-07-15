@@ -15,8 +15,11 @@ use uuid::Uuid;
 pub struct ChatSession {
     pub id: Uuid,
     /// Coarse grouping key (healer: cluster_id; chatbot: owner org/user key).
+    /// The aliases parse pre-unification healer JSON session files.
+    #[serde(alias = "cluster_id")]
     pub scope_id: Uuid,
     /// Fine target key (healer: instance_id; chatbot: free-form/empty).
+    #[serde(alias = "instance_id")]
     pub subject: String,
     /// Raw domain state string (e.g. "diagnosing"). Interpreted via [`crate::StateModel`].
     pub state: String,
@@ -27,6 +30,7 @@ pub struct ChatSession {
     pub completed_at: Option<DateTime<Utc>>,
     pub error_message: Option<String>,
     /// Domain snapshot captured at session creation.
+    #[serde(alias = "initial_issues")]
     pub initial_context: serde_json::Value,
     /// LLM provider used for this session (e.g. "ollama", "anthropic").
     pub provider: Option<String>,

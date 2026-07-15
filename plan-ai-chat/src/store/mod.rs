@@ -5,6 +5,7 @@
 //! themselves and add domain-specific extension traits on top (the healer
 //! does both).
 
+pub mod json_file;
 #[cfg(feature = "postgres")]
 pub mod migrations;
 #[cfg(feature = "postgres")]
