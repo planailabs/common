@@ -41,16 +41,21 @@ pub struct ConnectorConfig {
 }
 
 /// A named OpenAI-compatible endpoint (vLLM, LM Studio, api.openai.com, ...).
-#[derive(Debug, Clone)]
+/// Deserializable so hosts can embed a `[[<section>.openai]]` list in their
+/// config file directly.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OpenAiSource {
     /// Unique name; referenced as the provider string in model entries,
-    /// spawn requests, and session rows.
+    /// spawn requests, and session rows. Must not be
+    /// "ollama"/"anthropic"/"openrouter" and must not contain ':'.
     pub name: String,
     /// Base URL (e.g. "http://my-vllm:8000/v1").
     pub url: String,
     /// API key. Optional for local servers.
+    #[serde(default)]
     pub api_key: Option<String>,
     /// Default model when a request doesn't specify one.
+    #[serde(default)]
     pub model: Option<String>,
 }
 
