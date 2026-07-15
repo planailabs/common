@@ -3052,13 +3052,14 @@ bot_token = "secret:tg-token"
     }
 }
 
-// ── Healer stream events (shared between server and web client) ────────
+// ── Chat stream events (shared between server and web client) ──────────
 
-/// Event streamed from server to client during a healer session.
-/// This is the canonical wire type — used directly by both the server
-/// streaming functions and the WASM client renderer.
+/// Event streamed from server to client during an agent-chat session
+/// (healer or fleet chatbot). This is the canonical wire type — used
+/// directly by both the server streaming functions and the WASM client
+/// renderer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HealerStreamEvent {
+pub struct ChatStreamEvent {
     /// Event kind: "session_created", "message", "running_tools", "pins",
     /// "staff_pings", "state", "done", "error"
     pub kind: String,
@@ -3073,9 +3074,9 @@ pub struct HealerStreamEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub running_tools: Option<Vec<HealerRunningTool>>,
+    pub running_tools: Option<Vec<ChatRunningTool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pins: Option<Vec<HealerPin>>,
+    pub pins: Option<Vec<ChatPin>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staff_pings: Option<Vec<HealerStaffPing>>,
     /// Ephemeral status message (e.g. "Waiting for daemon reconnect...")
@@ -3088,19 +3089,19 @@ pub struct HealerStreamEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HealerRunningTool {
+pub struct ChatRunningTool {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
     pub started_at: String,
     /// Validation status for this tool call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation: Option<HealerToolValidation>,
+    pub validation: Option<ChatToolValidation>,
 }
 
-/// Validation verdict for a healer tool call.
+/// Validation verdict for an agent tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealerToolValidation {
+pub struct ChatToolValidation {
     /// "approved", "rejected", "skipped", "validating", "error"
     pub status: String,
     /// Validator reasoning (both for approvals and rejections).
@@ -3111,7 +3112,7 @@ pub struct HealerToolValidation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealerPin {
+pub struct ChatPin {
     pub slot: String,
     pub summary: String,
     #[serde(default)]
