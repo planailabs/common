@@ -15,7 +15,7 @@ use plan_ai_design::{Badge, BadgeVariant, ErrorText};
 use serde::{Deserialize, Serialize};
 
 use crate::render::{
-    ChatMsg, ModelEntry, reason_display, render_message, simple_md_to_html, state_badge,
+    ChatMsg, ModelEntry, reason_display, render_message, simple_md_to_html, state_badge_full,
 };
 use crate::wire::{ChatPin as PinInfo, ChatRunningTool as RunningToolInfo};
 
@@ -516,7 +516,7 @@ fn ChatSessionList(
                     for s in list.iter() {
                         {
                             let sid = s.id.clone();
-                            let (variant, label) = state_badge(&s.state);
+                            let (variant, label) = state_badge_full(&s.state);
                             let title = s.label.clone().unwrap_or_else(|| t!("chat-untitled"));
                             let updated = s.updated_at.format("%m-%d %H:%M").to_string();
                             rsx! {
@@ -868,7 +868,7 @@ fn ChatConversation(
         .as_ref()
         .and_then(|r| r.as_ref().ok())
         .cloned();
-    let (badge_variant, badge_label) = state_badge(&state.read());
+    let (badge_variant, badge_label) = state_badge_full(&state.read());
     let cur_state = state.read().clone();
     let is_terminal = matches!(cur_state.as_str(), "failed" | "cancelled");
     let budget_exhausted = state_reason

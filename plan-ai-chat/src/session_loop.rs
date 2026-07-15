@@ -353,6 +353,10 @@ pub(crate) async fn run_session(
     // tool execution.
     tokio::pin!(shutdown);
     let mut prompt = initial_prompt;
+    // True while an interactive session is idle-parked store-side as
+    // "completed" (turn finished, nothing awaited). Parked sessions skip the
+    // redundant final transition and stay "completed" across shutdowns.
+    let mut parked = false;
 
     let final_reason = loop {
         let reason = tokio::select! {
@@ -377,26 +381,57 @@ pub(crate) async fn run_session(
         // Interactive sessions idle after a completed turn, waiting for the
         // next user message (which may already be queued in the channel).
         if spec.interactive && matches!(reason, StopReason::Completed) {
-            let _ = events_tx.send(ChatEvent::Idle);
-            let idle = async {
-                match spec.idle_timeout {
-                    Some(d) => tokio::time::sleep(d).await,
-                    None => std::future::pending().await,
+            // A message queued while the agent worked skips the park —
+            // otherwise the transcript shows a done/planning flicker.
+            let queued = user_rx.try_recv().ok();
+            if queued.is_none() {
+                // Park store-side as "completed": the agent is done and
+                // awaiting nothing, and "completed" is resumable. The working
+                // phases (planning/executing/...) only exist while running.
+                let data = json!({"reason": "turn_complete"});
+                store
+                    .transition_state(session_id, "completed", true, &data)
+                    .await
+                    .ok();
+                emit_state_change(&events_tx, "completed", &data);
+                parked = true;
+                let _ = events_tx.send(ChatEvent::Idle);
+            }
+            let next = match queued {
+                Some(m) => Some(m),
+                None => {
+                    let idle = async {
+                        match spec.idle_timeout {
+                            Some(d) => tokio::time::sleep(d).await,
+                            None => std::future::pending().await,
+                        }
+                    };
+                    tokio::select! {
+                        msg = user_rx.recv() => match msg {
+                            Some(m) => Some(m),
+                            None => None, // channel closed — finish the session
+                        },
+                        _ = idle => None,
+                        _ = handles.cancel.cancelled() => break StopReason::Cancelled,
+                        _ = handles.pause_notify.notified() => break StopReason::Paused,
+                        _ = &mut shutdown => break StopReason::Shutdown,
+                        _ = deadline_signal(spec.deadline) => break StopReason::DeadlineExpired,
+                    }
                 }
-            };
-            let next = tokio::select! {
-                msg = user_rx.recv() => match msg {
-                    Some(m) => Some(m),
-                    None => None, // channel closed — finish the session
-                },
-                _ = idle => None,
-                _ = handles.cancel.cancelled() => break StopReason::Cancelled,
-                _ = handles.pause_notify.notified() => break StopReason::Paused,
-                _ = &mut shutdown => break StopReason::Shutdown,
-                _ = deadline_signal(spec.deadline) => break StopReason::DeadlineExpired,
             };
             match next {
                 Some(msg) => {
+                    if parked {
+                        // Un-park: restart the thinking at the initial phase.
+                        let start = state_model.initial_running_state().to_string();
+                        let data = json!({"reason": "user_message"});
+                        store
+                            .transition_state(session_id, &start, false, &data)
+                            .await
+                            .ok();
+                        emit_state_change(&events_tx, &start, &data);
+                        parked = false;
+                    }
                     store
                         .append_message(session_id, "user", &msg, None)
                         .await
@@ -419,11 +454,14 @@ pub(crate) async fn run_session(
 
     match final_reason {
         StopReason::Completed => {
-            let data = json!({"reason": "agent finished"});
-            store
-                .transition_state(session_id, "completed", true, &data)
-                .await?;
-            emit_state_change(&events_tx, "completed", &data);
+            // Idle-parked sessions already transitioned to "completed".
+            if !parked {
+                let data = json!({"reason": "agent finished"});
+                store
+                    .transition_state(session_id, "completed", true, &data)
+                    .await?;
+                emit_state_change(&events_tx, "completed", &data);
+            }
         }
         StopReason::AgentError(e) => {
             return Err(e.context("agent query failed"));
@@ -447,7 +485,8 @@ pub(crate) async fn run_session(
         StopReason::AwaitingApproval => {
             // State already transitioned by the set_phase tool — nothing to do.
         }
-        StopReason::Shutdown => {
+        // Parked sessions stay "completed" — there is no work to retry.
+        StopReason::Shutdown if !parked => {
             let data = json!({"reason": "server_shutdown"});
             store
                 .transition_state(session_id, "awaiting_retry", false, &data)
@@ -455,7 +494,7 @@ pub(crate) async fn run_session(
                 .ok();
             emit_state_change(&events_tx, "awaiting_retry", &data);
         }
-        StopReason::DeadlineExpired => {
+        StopReason::DeadlineExpired if !parked => {
             let data = json!({"reason": spec.deadline_reason});
             store
                 .transition_state(session_id, "awaiting_retry", false, &data)
@@ -463,6 +502,7 @@ pub(crate) async fn run_session(
                 .ok();
             emit_state_change(&events_tx, "awaiting_retry", &data);
         }
+        StopReason::Shutdown | StopReason::DeadlineExpired => {}
         StopReason::BudgetExceeded { used, limit } => {
             let data = json!({
                 "reason": "token_budget_exceeded",

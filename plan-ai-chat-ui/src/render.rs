@@ -59,6 +59,32 @@ pub fn state_badge(st: &str) -> (BadgeVariant, String) {
     }
 }
 
+/// Split a raw session state into the store-side lifecycle and, while the
+/// agent is working, the phase it is currently in (set via `set_phase`).
+pub fn split_state(st: &str) -> (&str, Option<&str>) {
+    match st {
+        "planning" | "executing" | "executed" | "diagnosing" | "remediating" | "verifying" => {
+            ("running", Some(st))
+        }
+        other => (other, None),
+    }
+}
+
+/// Badge showing lifecycle and working phase together ("running · executing").
+/// The variant follows the phase (the stronger signal); plain lifecycle states
+/// render exactly like [`state_badge`].
+pub fn state_badge_full(st: &str) -> (BadgeVariant, String) {
+    let (lifecycle, phase) = split_state(st);
+    let (l_variant, l_label) = state_badge(lifecycle);
+    match phase {
+        Some(p) => {
+            let (p_variant, p_label) = state_badge(p);
+            (p_variant, format!("{l_label} · {p_label}"))
+        }
+        None => (l_variant, l_label),
+    }
+}
+
 /// Derive a left-border color class from a state name, matching `state_badge` hues.
 fn state_border(st: &str) -> &'static str {
     match st {
