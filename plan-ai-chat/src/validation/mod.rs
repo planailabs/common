@@ -313,17 +313,26 @@ fn extract_reason(args: Option<&str>) -> (String, Option<String>) {
     (reason, clean)
 }
 
+/// Largest index <= `max` that is a char boundary (safe multibyte truncation).
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    let mut i = max.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Cap a result string to MAX_RESULT_SIZE with an explicit truncation marker.
 fn cap_result(result: &str) -> String {
     if result.len() <= MAX_RESULT_SIZE {
         result.to_string()
     } else {
-        let first_kb = &result[..1024.min(result.len())];
+        let cut = floor_char_boundary(result, 1024);
         format!(
             "[truncated: {} bytes total] {}... [remaining {} bytes omitted]",
             result.len(),
-            first_kb,
-            result.len() - 1024
+            &result[..cut],
+            result.len() - cut
         )
     }
 }
@@ -870,7 +879,11 @@ Use the `approve` or `reject` tool to record your verdict."#,
 }
 
 fn truncate_for_prompt(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        &s[..floor_char_boundary(s, max)]
+    }
 }
 
 // ── Builder helper ───────────────────────────────────────────────────
@@ -1049,6 +1062,17 @@ mod tests {
         let capped = cap_result(&large);
         assert!(capped.contains("[truncated: 5000 bytes total]"));
         assert!(capped.len() < large.len());
+    }
+
+    #[test]
+    fn test_truncation_respects_char_boundaries() {
+        // Multibyte content straddling the cut points must not panic.
+        let cjk = "动".repeat(2000); // 3 bytes each; 1024 is mid-char
+        let capped = cap_result(&cjk);
+        assert!(capped.contains("bytes total"));
+        let t = truncate_for_prompt(&cjk, 200);
+        assert!(t.len() <= 200);
+        assert!(t.chars().all(|c| c == '动'));
     }
 
     #[test]
