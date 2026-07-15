@@ -11,7 +11,10 @@
 //! context (the `t!` keys live in the host's locale files).
 
 pub mod render;
+pub mod sidebar;
 pub mod wire;
 
+#[cfg(feature = "server")]
+pub mod backend;
 #[cfg(feature = "server")]
 pub mod convert;

@@ -14,10 +14,12 @@ default = []
 # Server-side SSE conversion (plan_ai_chat::ChatEvent -> ChatStreamEvent,
 # running-tool/pin extraction). Pulls in plan-ai-chat, which is not wasm-safe —
 # keep off in browser builds.
-server = ["dep:plan-ai-chat"]
+server = ["dep:plan-ai-chat", "dioxus/server"]
 
 [dependencies]
-dioxus = "0.8.0-alpha.0"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+dioxus = { version = "0.8.0-alpha.0", features = ["fullstack"] }
 dioxus-i18n = "0.5"
 plan-ai-design = { path = "../../design" }
 pulldown-cmark = "0.12"
