@@ -1,0 +1,26 @@
+[package]
+name = "plan-ai-chat-ui"
+version = "0.1.0"
+edition = "2024"
+description = "Reusable Dioxus UI + SSE wire layer for plan-ai-chat agent sessions: stream event wire types, transcript rendering, markdown sanitizer, event conversion"
+
+# NOTE for the shared `common` submodule: plan-ai-design resolves via the
+# superproject's `design/` entry (web-agency: real directory; mac-mgmt:
+# symlink to memvault/plan-ai-design) — same layout convention as
+# plan-ai-actions. Superprojects without it must adjust or exclude this crate.
+
+[features]
+default = []
+# Server-side SSE conversion (plan_ai_chat::ChatEvent -> ChatStreamEvent,
+# running-tool/pin extraction). Pulls in plan-ai-chat, which is not wasm-safe —
+# keep off in browser builds.
+server = ["dep:plan-ai-chat"]
+
+[dependencies]
+dioxus = "0.8.0-alpha.0"
+dioxus-i18n = "0.5"
+plan-ai-design = { path = "../../design" }
+pulldown-cmark = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+plan-ai-chat = { path = "../plan-ai-chat", optional = true }
