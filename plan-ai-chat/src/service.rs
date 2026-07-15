@@ -178,6 +178,11 @@ impl ChatState {
             .await
         {
             for sess in interrupted {
+                // Already paused (e.g. by a previous restart sweep): re-pausing
+                // would append a duplicate state_change event on every restart.
+                if sess.state == "paused" {
+                    continue;
+                }
                 let data = serde_json::json!({"reason": "server_restart"});
                 let _ = manager
                     .store()
