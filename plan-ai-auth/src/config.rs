@@ -41,6 +41,15 @@ pub struct OidcProviderConfig {
     /// Organization names to auto-add users to on login (with "read" role).
     #[serde(default)]
     pub auto_join_orgs: Vec<String>,
+    /// OIDC claim path holding the user's groups (e.g. "groups", "roles",
+    /// "cognito:groups"). If set, its string values are captured at login and
+    /// passed to the resolver.
+    #[serde(default)]
+    pub groups_claim: Option<String>,
+    /// How many days a login keeps the account "live" before it deactivates for
+    /// inactivity (liveliness). None = never deactivate.
+    #[serde(default)]
+    pub liveliness_days: Option<u32>,
 }
 
 fn default_auth_external_url() -> String {

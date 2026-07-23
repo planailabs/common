@@ -33,6 +33,10 @@ pub struct ProviderMeta {
     /// Emails granted admin, from the app's AuthConfig. Passed to the resolver
     /// so admin designation actually takes effect on login.
     pub admin_emails: Vec<String>,
+    /// OIDC claim path holding the user's groups (app-specific).
+    pub groups_claim: Option<String>,
+    /// Days a login keeps the account live before deactivating (liveliness).
+    pub liveliness_days: Option<u32>,
 }
 
 /// Providers populated during `build_auth_layers()`.
@@ -59,6 +63,24 @@ pub trait UserResolver: Send + Sync + 'static {
         admin_emails: &[String],
         auto_join_orgs: &[String],
     ) -> Result<WebUser, anyhow::Error>;
+
+    /// Resolve a user with the full OIDC login context: the `provider_slug` the
+    /// login came through, the user's `groups` captured from the provider's
+    /// configured claim, and the provider's `liveliness_days` (login TTL).
+    /// Defaults to [`Self::resolve_user`] (ignoring the extra context) so existing
+    /// implementors keep working unchanged.
+    async fn resolve_user_ctx(
+        &self,
+        email: &str,
+        name: Option<&str>,
+        admin_emails: &[String],
+        auto_join_orgs: &[String],
+        _provider_slug: &str,
+        _groups: &[String],
+        _liveliness_days: Option<u32>,
+    ) -> Result<WebUser, anyhow::Error> {
+        self.resolve_user(email, name, admin_emails, auto_join_orgs).await
+    }
 
     /// Load a user by ID (for impersonation).
     async fn load_user_by_id(&self, id: Uuid) -> Result<Option<WebUser>, anyhow::Error>;
@@ -102,6 +124,29 @@ fn name_from_id_token(id_token: &str) -> Option<String> {
 
 fn issuer_from_id_token(id_token: &str) -> Option<String> {
     jwt_claims(id_token)?.get("iss")?.as_str().map(String::from)
+}
+
+/// Extract group values from the id_token at `claim` (dotted paths supported,
+/// e.g. `realm_access.roles`). The claim may be an array of strings or a single
+/// space-separated string.
+fn groups_from_id_token(id_token: &str, claim: &str) -> Vec<String> {
+    let Some(claims) = jwt_claims(id_token) else { return vec![] };
+    let mut cur = &claims;
+    for seg in claim.split('.') {
+        match cur.get(seg) {
+            Some(v) => cur = v,
+            None => return vec![],
+        }
+    }
+    match cur {
+        serde_json::Value::Array(a) => {
+            a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+        }
+        serde_json::Value::String(s) => {
+            s.split_whitespace().map(String::from).collect()
+        }
+        _ => vec![],
+    }
 }
 
 fn provider_for_issuer(iss: &str) -> Option<&'static ProviderMeta> {
@@ -206,6 +251,8 @@ pub async fn build_auth_layers(
             allowed_emails: provider.allowed_emails.clone(),
             auto_join_orgs: provider.auto_join_orgs.clone(),
             admin_emails: auth.admin_emails.clone(),
+            groups_claim: provider.groups_claim.clone(),
+            liveliness_days: provider.liveliness_days,
         });
     }
 
@@ -387,12 +434,21 @@ pub async fn require_auth(mut request: Request<Body>, next: Next) -> Response {
                             let display_name = name_from_id_token(&session.id_token);
                             let admin_emails: &[String] =
                                 provider.map(|p| p.admin_emails.as_slice()).unwrap_or(&[]);
+                            let slug = provider.map(|p| p.slug.as_str()).unwrap_or("");
+                            let groups = provider
+                                .and_then(|p| p.groups_claim.as_deref())
+                                .map(|c| groups_from_id_token(&session.id_token, c))
+                                .unwrap_or_default();
+                            let liveliness_days = provider.and_then(|p| p.liveliness_days);
                             match resolver
-                                .resolve_user(
+                                .resolve_user_ctx(
                                     &email,
                                     display_name.as_deref(),
                                     admin_emails,
                                     auto_join_orgs,
+                                    slug,
+                                    &groups,
+                                    liveliness_days,
                                 )
                                 .await
                             {
