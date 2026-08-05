@@ -59,20 +59,42 @@ pub fn enabled() -> bool {
     .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
 }
 
-/// Install the global subscriber, and — when an OTLP endpoint is configured —
-/// the tracer/meter providers exporting to it.
+/// The `EnvFilter` directives to run with: `RUST_LOG` when set, otherwise
+/// `default_filter` — plus the exporter-silencing directives when an OTLP
+/// endpoint is configured.
 ///
-/// `service` names the service unless `OTEL_SERVICE_NAME` overrides it;
-/// `default_filter` is the `EnvFilter` used when `RUST_LOG` is unset.
-/// Safe to call twice (the second call is ignored).
-pub fn init(service: &str, default_filter: &str) {
-    use tracing_subscriber::prelude::*;
+/// [`init`] applies this itself; call it directly only when building the
+/// subscriber by hand, as the daemon does for its reloadable filter.
+pub fn effective_filter(default_filter: &str) -> String {
+    let base = std::env::var("RUST_LOG").unwrap_or_else(|_| default_filter.to_string());
+    if enabled() {
+        silence_exporter(&base)
+    } else {
+        base
+    }
+}
 
+/// Install the tracer, meter and logger providers and return the subscriber
+/// layers that feed them, for composing into a hand-built registry:
+///
+/// ```ignore
+/// tracing_subscriber::registry()
+///     .with(my_reloadable_filter)
+///     .with(tracing_subscriber::fmt::layer())
+///     .with(otel::layers("my-service"))
+///     .init();
+/// ```
+///
+/// Most services want [`init`] instead. Returns an empty vec on a second call
+/// — a second set of providers would register a second Prometheus collector on
+/// the same registry, which the registry rejects.
+pub fn layers<S>(service: &str) -> Vec<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>>
+where
+    S: tracing::Subscriber + Send + Sync + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
     static ONCE: OnceLock<()> = OnceLock::new();
     if ONCE.set(()).is_err() {
-        // A second provider would register a second Prometheus collector on
-        // the same registry, which the registry rejects.
-        return;
+        return Vec::new();
     }
 
     let otlp = enabled();
@@ -83,13 +105,6 @@ pub fn init(service: &str, default_filter: &str) {
     if otlp {
         global::set_text_map_propagator(TraceContextPropagator::new());
     }
-
-    let base = std::env::var("RUST_LOG").unwrap_or_else(|_| default_filter.to_string());
-    let filter = tracing_subscriber::EnvFilter::new(if otlp {
-        silence_exporter(&base)
-    } else {
-        base
-    });
 
     let resource = {
         // `Resource::builder` already reads OTEL_SERVICE_NAME and
@@ -162,29 +177,57 @@ pub fn init(service: &str, default_filter: &str) {
         bridge
     });
 
-    let registry = tracing_subscriber::registry()
-        .with(filter)
-        // Kept alongside the OTLP bridge on purpose: journald stays useful when
-        // the collector is unreachable, which is when logs matter most.
-        .with(tracing_subscriber::fmt::layer())
-        .with(tracer.map(|t| tracing_opentelemetry::layer().with_tracer(t)))
-        .with(logs)
-        .with(metrics_enabled.then_some(metrics::EventMetricsLayer));
+    let mut out: Vec<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>> = Vec::new();
+    if let Some(tracer) = tracer {
+        out.push(Box::new(
+            tracing_opentelemetry::layer().with_tracer(tracer),
+        ));
+    }
+    if let Some(logs) = logs {
+        out.push(Box::new(logs));
+    }
+    if metrics_enabled {
+        out.push(Box::new(metrics::EventMetricsLayer));
+        // Bind the instruments to the provider that was just installed.
+        metrics::init();
+    }
     // Sentry stays a peer of the OTLP bridge rather than an alternative to it:
     // errors keep their existing triage path while traces go to the collector.
     // A no-op until `sentry_ext::init_sentry` installs a client.
     #[cfg(feature = "sentry")]
-    let registry = registry.with(sentry::integrations::tracing::layer());
-    let _ = registry.try_init();
-
-    // Bind the instruments to the provider that was just installed.
-    if metrics_enabled {
-        metrics::init();
-    }
+    out.push(Box::new(sentry::integrations::tracing::layer()));
 
     if otlp {
         tracing::info!(service, sampler_ratio = ratio, "exporting to OTLP collector");
     }
+    out
+}
+
+/// Install the global subscriber, and — when an OTLP endpoint is configured —
+/// the tracer/meter/logger providers exporting to it.
+///
+/// `service` names the service unless `OTEL_SERVICE_NAME` overrides it;
+/// `default_filter` is the `EnvFilter` used when `RUST_LOG` is unset.
+/// Safe to call twice (the second call is ignored).
+pub fn init(service: &str, default_filter: &str) {
+    use tracing_subscriber::prelude::*;
+
+    // Own the guard here rather than leaning on the one inside `layers`: a
+    // second caller that got as far as `try_init` would install a subscriber
+    // without the OTel layers and win the race against the first.
+    static ONCE: OnceLock<()> = OnceLock::new();
+    if ONCE.set(()).is_err() {
+        return;
+    }
+
+    let filter = tracing_subscriber::EnvFilter::new(effective_filter(default_filter));
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        // Kept alongside the OTLP bridge on purpose: journald stays useful when
+        // the collector is unreachable, which is when logs matter most.
+        .with(tracing_subscriber::fmt::layer())
+        .with(layers(service))
+        .try_init();
 }
 
 /// Flush and stop the exporters. Call before exiting — the batch processors
