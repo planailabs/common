@@ -27,9 +27,14 @@ use rocket::{Data, Request, Response};
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-/// Paths that never get a span: scrape and liveness traffic is constant, and
-/// tracing it buys nothing but export volume.
-const UNTRACED_PATHS: &[&str] = &["/metrics", "/health", "/healthz", "/readyz"];
+/// Path suffixes that never get a span: scrape and liveness traffic is
+/// constant, and tracing it buys nothing but export volume. Matched as a
+/// suffix so a mounted prefix (`/api/metrics`) is covered too.
+const UNTRACED_SUFFIXES: &[&str] = &["/metrics", "/health", "/healthz", "/readyz"];
+
+fn untraced(path: &str) -> bool {
+    UNTRACED_SUFFIXES.iter().any(|s| path.ends_with(s))
+}
 
 /// `rocket::http::HeaderMap` is not `http::HeaderMap`, so
 /// `opentelemetry_http::HeaderExtractor` doesn't apply.
@@ -99,7 +104,7 @@ impl Fairing for OtelFairing {
     }
 
     async fn on_request(&self, req: &mut Request<'_>, _data: &mut Data<'_>) {
-        if UNTRACED_PATHS.contains(&req.uri().path().as_str()) {
+        if untraced(req.uri().path().as_str()) {
             return;
         }
 

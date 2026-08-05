@@ -80,11 +80,6 @@ pub fn init(service: &str, default_filter: &str) {
     // they stay on without a collector; traces only exist to be exported.
     let metrics_enabled = otlp || cfg!(feature = "otel-prometheus");
 
-    if !otlp && !metrics_enabled {
-        crate::tracing_init::init_tracing(default_filter);
-        return;
-    }
-
     if otlp {
         global::set_text_map_propagator(TraceContextPropagator::new());
     }
@@ -167,28 +162,29 @@ pub fn init(service: &str, default_filter: &str) {
         bridge
     });
 
-    let _ = tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(filter)
         // Kept alongside the OTLP bridge on purpose: journald stays useful when
         // the collector is unreachable, which is when logs matter most.
         .with(tracing_subscriber::fmt::layer())
         .with(tracer.map(|t| tracing_opentelemetry::layer().with_tracer(t)))
         .with(logs)
-        .with(metrics_enabled.then_some(metrics::EventMetricsLayer))
-        .try_init();
+        .with(metrics_enabled.then_some(metrics::EventMetricsLayer));
+    // Sentry stays a peer of the OTLP bridge rather than an alternative to it:
+    // errors keep their existing triage path while traces go to the collector.
+    // A no-op until `sentry_ext::init_sentry` installs a client.
+    #[cfg(feature = "sentry")]
+    let registry = registry.with(sentry::integrations::tracing::layer());
+    let _ = registry.try_init();
 
     // Bind the instruments to the provider that was just installed.
     if metrics_enabled {
         metrics::init();
     }
 
-    tracing::info!(
-        service,
-        traces = otlp,
-        logs = otlp,
-        sampler_ratio = ratio,
-        "opentelemetry initialised"
-    );
+    if otlp {
+        tracing::info!(service, sampler_ratio = ratio, "exporting to OTLP collector");
+    }
 }
 
 /// Flush and stop the exporters. Call before exiting — the batch processors
