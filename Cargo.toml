@@ -7,6 +7,16 @@ edition = "2024"
 default = []
 sentry = ["dep:sentry"]
 tracing-init = ["dep:tracing-subscriber", "dep:tracing"]
+# OTLP traces + metrics. Exports only when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+otel = [
+  "tracing-init",
+  "dep:opentelemetry",
+  "dep:opentelemetry_sdk",
+  "dep:opentelemetry-otlp",
+  "dep:tracing-opentelemetry",
+]
+# Adds the axum server-span + request-duration middleware.
+otel-axum = ["otel", "dep:axum", "dep:http", "dep:opentelemetry-http", "dep:tower-http"]
 observability = ["sentry", "tracing-init"]
 
 [dependencies]
@@ -25,6 +35,18 @@ uuid = { version = "1", features = ["serde"] }
 toml = "0.8"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+# OpenTelemetry. The first-party otel crates release in lockstep and must stay
+# on the same minor; tracing-opentelemetry runs one ahead (0.33 pairs with 0.32).
+# OTLP over HTTP/protobuf with the blocking reqwest client: the batch processors
+# export from their own threads, where an async client has no reactor.
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls", "internal-logs"], optional = true }
+opentelemetry-http = { version = "0.32", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
+axum = { version = "0.8", default-features = false, features = ["matched-path"], optional = true }
+http = { version = "1", optional = true }
+tower-http = { version = "0.6", features = ["trace"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

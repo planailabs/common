@@ -110,6 +110,10 @@ impl schemars::JsonSchema for Secret {
         })
     }
 }
+#[cfg(feature = "otel")]
+pub mod metrics;
+#[cfg(feature = "otel")]
+pub mod otel;
 #[cfg(feature = "sentry")]
 pub mod sentry_ext;
 #[cfg(feature = "tracing-init")]
