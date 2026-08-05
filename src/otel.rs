@@ -19,6 +19,11 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
+/// Re-exported so dependents build their own instruments against the exact
+/// version pinned here. A different minor would register with a different
+/// global meter provider and silently report nothing.
+pub use opentelemetry;
+
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::{
@@ -212,22 +217,21 @@ where
 pub fn init(service: &str, default_filter: &str) {
     use tracing_subscriber::prelude::*;
 
-    // Own the guard here rather than leaning on the one inside `layers`: a
-    // second caller that got as far as `try_init` would install a subscriber
-    // without the OTel layers and win the race against the first.
+    // `get_or_init` rather than `set`: a second caller has to *wait* for the
+    // first to finish, not skip ahead. Anything that builds an instrument
+    // right after calling init would otherwise bind to the no-op provider
+    // that is still installed while the first call is mid-flight.
     static ONCE: OnceLock<()> = OnceLock::new();
-    if ONCE.set(()).is_err() {
-        return;
-    }
-
-    let filter = tracing_subscriber::EnvFilter::new(effective_filter(default_filter));
-    let _ = tracing_subscriber::registry()
-        .with(filter)
-        // Kept alongside the OTLP bridge on purpose: journald stays useful when
-        // the collector is unreachable, which is when logs matter most.
-        .with(tracing_subscriber::fmt::layer())
-        .with(layers(service))
-        .try_init();
+    ONCE.get_or_init(|| {
+        let filter = tracing_subscriber::EnvFilter::new(effective_filter(default_filter));
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            // Kept alongside the OTLP bridge on purpose: journald stays useful
+            // when the collector is unreachable, which is when logs matter most.
+            .with(tracing_subscriber::fmt::layer())
+            .with(layers(service))
+            .try_init();
+    });
 }
 
 /// Flush and stop the exporters. Call before exiting — the batch processors
