@@ -61,6 +61,13 @@ pub fn enabled() -> bool {
 pub fn init(service: &str, default_filter: &str) {
     use tracing_subscriber::prelude::*;
 
+    static ONCE: OnceLock<()> = OnceLock::new();
+    if ONCE.set(()).is_err() {
+        // A second provider would register a second Prometheus collector on
+        // the same registry, which the registry rejects.
+        return;
+    }
+
     let otlp = enabled();
     // Metrics are also collected for a local Prometheus scrape endpoint, so
     // they stay on without a collector; traces only exist to be exported.

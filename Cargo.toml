@@ -53,4 +53,7 @@ opentelemetry-prometheus = { version = "0.32", optional = true }
 prometheus = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
+# For the axum middleware test only.
+axum = { version = "0.8", features = ["matched-path"] }
 tokio = { version = "1", features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }

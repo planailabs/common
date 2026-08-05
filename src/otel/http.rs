@@ -98,6 +98,41 @@ pub fn trace_layer() -> OtelTraceLayer {
         .on_eos(())
 }
 
+#[cfg(all(test, feature = "otel-prometheus"))]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn records_the_route_template_not_the_uri() {
+        crate::otel::init("test-service", "info");
+
+        let app = Router::new()
+            .route("/orders/{id}", get(|| async { "ok" }))
+            .layer(trace_layer())
+            .layer(axum::middleware::from_fn(record_request_metrics));
+
+        let res = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/orders/8a3f-2b91")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+
+        let out = crate::metrics::prom::encode().expect("encode");
+        assert!(out.contains(r#"http_route="/orders/{id}""#), "{out}");
+        assert!(!out.contains("8a3f-2b91"), "{out}");
+        assert!(out.contains(r#"http_response_status_code="200""#), "{out}");
+    }
+}
+
 /// Records [`crate::metrics::HTTP_SERVER_DURATION`]. Separate from
 /// [`trace_layer`] because `TraceLayer`'s response hook can't see the request.
 pub async fn record_request_metrics(req: Request, next: Next) -> Response {
