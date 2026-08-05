@@ -76,7 +76,11 @@ pub fn init(service: &str, default_filter: &str) {
     }
 
     let base = std::env::var("RUST_LOG").unwrap_or_else(|_| default_filter.to_string());
-    let filter = tracing_subscriber::EnvFilter::new(format!("{base},{EXPORTER_NOISE}"));
+    let filter = tracing_subscriber::EnvFilter::new(if otlp {
+        silence_exporter(&base)
+    } else {
+        base
+    });
 
     let resource = {
         // `Resource::builder` already reads OTEL_SERVICE_NAME and
@@ -165,6 +169,39 @@ pub fn shutdown() {
         if let Err(e) = p.shutdown() {
             tracing::warn!("otel meter shutdown: {e}");
         }
+    }
+}
+
+/// Append the exporter-silencing directives that `filter` doesn't already
+/// speak to — an explicit `RUST_LOG=hyper=debug` still wins, everything else
+/// gets muted so exports can't feed themselves.
+fn silence_exporter(filter: &str) -> String {
+    let configured: Vec<&str> = filter
+        .split(',')
+        .filter_map(|d| d.split('=').next())
+        .map(str::trim)
+        .collect();
+    let mut out = filter.to_string();
+    for directive in EXPORTER_NOISE.split(',').map(str::trim) {
+        let target = directive.split('=').next().unwrap_or_default();
+        if !configured.contains(&target) {
+            out.push(',');
+            out.push_str(directive);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::silence_exporter;
+
+    #[test]
+    fn keeps_explicit_directives_and_mutes_the_rest() {
+        let out = silence_exporter("info,hyper=debug");
+        assert!(out.starts_with("info,hyper=debug"));
+        assert!(!out.contains("hyper=off"), "{out}");
+        assert!(out.contains("reqwest=off"), "{out}");
     }
 }
 
