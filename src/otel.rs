@@ -1,4 +1,4 @@
-//! OpenTelemetry traces + metrics over OTLP/HTTP.
+//! OpenTelemetry traces, metrics and logs over OTLP/HTTP.
 //!
 //! [`init`] replaces [`crate::tracing_init::init_tracing`] for services that
 //! should export to a collector. It is a no-op upgrade: with no
@@ -11,7 +11,10 @@
 //! `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER_ARG`, ...).
 //!
 //! Instrument with `tracing` (`#[tracing::instrument]`, `info_span!`), never
-//! with the OTel API directly — the bridge layer translates spans on close.
+//! with the OTel API directly — the bridge layers translate spans on close and
+//! events into log records, the latter carrying the enclosing span's trace and
+//! span id. Events also keep going to stdout: journald stays readable when the
+//! collector is unreachable.
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -20,6 +23,7 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::{
     Resource,
+    logs::SdkLoggerProvider,
     metrics::{PeriodicReader, SdkMeterProvider},
     propagation::TraceContextPropagator,
     trace::{Sampler, SdkTracerProvider},
@@ -32,6 +36,7 @@ use crate::metrics;
 
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 static METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
+static LOGGER_PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
 
 /// The exporter's own HTTP stack must not be traced: its spans would produce
 /// exports, which produce more spans. Appended to whatever filter is in use.
@@ -126,7 +131,7 @@ pub fn init(service: &str, default_filter: &str) {
     });
 
     if metrics_enabled {
-        let mut builder = SdkMeterProvider::builder().with_resource(resource);
+        let mut builder = SdkMeterProvider::builder().with_resource(resource.clone());
         #[cfg(feature = "otel-prometheus")]
         {
             builder = builder.with_reader(metrics::prometheus_reader());
@@ -143,10 +148,30 @@ pub fn init(service: &str, default_filter: &str) {
         let _ = METER_PROVIDER.set(meter_provider);
     }
 
+    // Log records. `tracing-opentelemetry` activates the OTel context on span
+    // entry, so records emitted inside a span carry its trace and span id.
+    let logs = otlp.then(|| {
+        let log_exporter = opentelemetry_otlp::LogExporter::builder()
+            .with_http()
+            .build()
+            .expect("failed to build OTLP log exporter");
+        let provider = SdkLoggerProvider::builder()
+            .with_batch_exporter(log_exporter)
+            .with_resource(resource)
+            .build();
+        let bridge =
+            opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&provider);
+        let _ = LOGGER_PROVIDER.set(provider);
+        bridge
+    });
+
     let _ = tracing_subscriber::registry()
         .with(filter)
+        // Kept alongside the OTLP bridge on purpose: journald stays useful when
+        // the collector is unreachable, which is when logs matter most.
         .with(tracing_subscriber::fmt::layer())
         .with(tracer.map(|t| tracing_opentelemetry::layer().with_tracer(t)))
+        .with(logs)
         .with(metrics_enabled.then_some(metrics::EventMetricsLayer))
         .try_init();
 
@@ -158,6 +183,7 @@ pub fn init(service: &str, default_filter: &str) {
     tracing::info!(
         service,
         traces = otlp,
+        logs = otlp,
         sampler_ratio = ratio,
         "opentelemetry initialised"
     );
@@ -175,6 +201,11 @@ pub fn shutdown() {
     if let Some(p) = METER_PROVIDER.get() {
         if let Err(e) = p.shutdown() {
             tracing::warn!("otel meter shutdown: {e}");
+        }
+    }
+    if let Some(p) = LOGGER_PROVIDER.get() {
+        if let Err(e) = p.shutdown() {
+            tracing::warn!("otel logger shutdown: {e}");
         }
     }
 }
