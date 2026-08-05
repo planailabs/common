@@ -18,6 +18,51 @@ pub fn meter() -> Meter {
     global::meter(SCOPE)
 }
 
+/// Prometheus bridge: the OTel pipeline is the source of truth, this renders
+/// it in the Prometheus text format for scrape endpoints.
+#[cfg(feature = "otel-prometheus")]
+pub mod prom {
+    use std::sync::OnceLock;
+
+    /// Re-exported so callers encode with the same version this was built with.
+    pub use prometheus;
+
+    static REGISTRY: OnceLock<prometheus::Registry> = OnceLock::new();
+
+    /// The registry fed by the OTel meter provider. Empty until
+    /// [`crate::otel::init`] has run.
+    pub fn registry() -> &'static prometheus::Registry {
+        REGISTRY.get_or_init(prometheus::Registry::new)
+    }
+
+    /// Collect and encode everything in the registry. Collecting runs the
+    /// observable-instrument callbacks, so gauges are read at scrape time.
+    pub fn encode() -> Result<String, prometheus::Error> {
+        encode_families(registry().gather())
+    }
+
+    /// [`encode`] over a caller-filtered family list (e.g. one tenant's series).
+    pub fn encode_families(families: Vec<prometheus::proto::MetricFamily>) -> Result<String, prometheus::Error> {
+        use prometheus::Encoder;
+        let mut buf = Vec::new();
+        prometheus::TextEncoder::new().encode(&families, &mut buf)?;
+        String::from_utf8(buf).map_err(|e| prometheus::Error::Msg(e.to_string()))
+    }
+}
+
+/// The metric reader that feeds [`prom::registry`]. Installed by
+/// [`crate::otel::init`].
+#[cfg(feature = "otel-prometheus")]
+pub(crate) fn prometheus_reader() -> opentelemetry_prometheus::PrometheusExporter {
+    opentelemetry_prometheus::exporter()
+        .with_registry(prom::registry().clone())
+        // Scope info adds an `otel_scope_name` label to every series and a
+        // metadata metric; neither earns its bytes here.
+        .without_scope_info()
+        .build()
+        .expect("failed to build prometheus exporter")
+}
+
 /// Inbound HTTP request duration, seconds. Attributes:
 /// `http.request.method`, `http.route`, `http.response.status_code`.
 pub static HTTP_SERVER_DURATION: LazyLock<Histogram<f64>> = LazyLock::new(|| {
@@ -71,6 +116,24 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventMetricsLayer 
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         LOG_EVENTS.add(1, &[kv("level", level_str(event.metadata().level()))]);
+    }
+}
+
+#[cfg(all(test, feature = "otel-prometheus"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn otel_metrics_render_as_prometheus() {
+        crate::otel::init("test-service", "info");
+        counter("test.events").add(3, &[kv("kind", "demo")]);
+        tracing::warn!("counted by the event layer");
+
+        let out = prom::encode().expect("encode");
+        assert!(out.contains("test_events_total{kind=\"demo\"} 3"), "{out}");
+        // Observable callback ran at collection time.
+        assert!(out.contains("process_uptime_seconds"), "{out}");
+        assert!(out.contains("log_events_total{level=\"warn\"}"), "{out}");
     }
 }
 

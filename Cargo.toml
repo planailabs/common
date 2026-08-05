@@ -17,6 +17,8 @@ otel = [
 ]
 # Adds the axum server-span + request-duration middleware.
 otel-axum = ["otel", "dep:axum", "dep:http", "dep:opentelemetry-http", "dep:tower-http"]
+# Exposes the OTel metrics as a Prometheus registry for scrape endpoints.
+otel-prometheus = ["otel", "dep:opentelemetry-prometheus", "dep:prometheus"]
 observability = ["sentry", "tracing-init"]
 
 [dependencies]
@@ -47,6 +49,8 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 axum = { version = "0.8", default-features = false, features = ["matched-path"], optional = true }
 http = { version = "1", optional = true }
 tower-http = { version = "0.6", features = ["trace"], optional = true }
+opentelemetry-prometheus = { version = "0.32", optional = true }
+prometheus = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

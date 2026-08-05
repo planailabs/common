@@ -61,12 +61,19 @@ pub fn enabled() -> bool {
 pub fn init(service: &str, default_filter: &str) {
     use tracing_subscriber::prelude::*;
 
-    if !enabled() {
+    let otlp = enabled();
+    // Metrics are also collected for a local Prometheus scrape endpoint, so
+    // they stay on without a collector; traces only exist to be exported.
+    let metrics_enabled = otlp || cfg!(feature = "otel-prometheus");
+
+    if !otlp && !metrics_enabled {
         crate::tracing_init::init_tracing(default_filter);
         return;
     }
 
-    global::set_text_map_propagator(TraceContextPropagator::new());
+    if otlp {
+        global::set_text_map_propagator(TraceContextPropagator::new());
+    }
 
     let base = std::env::var("RUST_LOG").unwrap_or_else(|_| default_filter.to_string());
     let filter = tracing_subscriber::EnvFilter::new(format!("{base},{EXPORTER_NOISE}"));
@@ -89,43 +96,60 @@ pub fn init(service: &str, default_filter: &str) {
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(1.0);
 
-    let span_exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .build()
-        .expect("failed to build OTLP span exporter");
-    let tracer_provider = SdkTracerProvider::builder()
-        .with_batch_exporter(span_exporter)
-        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
-            ratio,
-        ))))
-        .with_resource(resource.clone())
-        .build();
-    let tracer = tracer_provider.tracer(service.to_string());
-    global::set_tracer_provider(tracer_provider.clone());
-    let _ = TRACER_PROVIDER.set(tracer_provider);
+    let tracer = otlp.then(|| {
+        let span_exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .build()
+            .expect("failed to build OTLP span exporter");
+        let provider = SdkTracerProvider::builder()
+            .with_batch_exporter(span_exporter)
+            .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+                ratio,
+            ))))
+            .with_resource(resource.clone())
+            .build();
+        let tracer = provider.tracer(service.to_string());
+        global::set_tracer_provider(provider.clone());
+        let _ = TRACER_PROVIDER.set(provider);
+        tracer
+    });
 
-    let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
-        .with_http()
-        .build()
-        .expect("failed to build OTLP metric exporter");
-    let meter_provider = SdkMeterProvider::builder()
-        .with_reader(PeriodicReader::builder(metric_exporter).build())
-        .with_resource(resource)
-        .build();
-    global::set_meter_provider(meter_provider.clone());
-    let _ = METER_PROVIDER.set(meter_provider);
+    if metrics_enabled {
+        let mut builder = SdkMeterProvider::builder().with_resource(resource);
+        #[cfg(feature = "otel-prometheus")]
+        {
+            builder = builder.with_reader(metrics::prometheus_reader());
+        }
+        if otlp {
+            let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
+                .with_http()
+                .build()
+                .expect("failed to build OTLP metric exporter");
+            builder = builder.with_reader(PeriodicReader::builder(metric_exporter).build());
+        }
+        let meter_provider = builder.build();
+        global::set_meter_provider(meter_provider.clone());
+        let _ = METER_PROVIDER.set(meter_provider);
+    }
 
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-        .with(metrics::EventMetricsLayer)
+        .with(tracer.map(|t| tracing_opentelemetry::layer().with_tracer(t)))
+        .with(metrics_enabled.then_some(metrics::EventMetricsLayer))
         .try_init();
 
     // Bind the instruments to the provider that was just installed.
-    metrics::init();
+    if metrics_enabled {
+        metrics::init();
+    }
 
-    tracing::info!(service, sampler_ratio = ratio, "opentelemetry export enabled");
+    tracing::info!(
+        service,
+        traces = otlp,
+        sampler_ratio = ratio,
+        "opentelemetry initialised"
+    );
 }
 
 /// Flush and stop the exporters. Call before exiting — the batch processors
