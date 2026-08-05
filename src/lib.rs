@@ -1636,6 +1636,69 @@ impl Default for MetricsConfig {
     }
 }
 
+// ── OpenTelemetry ───────────────────────────────────────────────────────
+
+/// One header sent with every OTLP export, typically the collector's auth
+/// header or a tenant id.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OtelHeader {
+    pub key: String,
+    pub value: String,
+}
+
+/// `[opentelemetry]` — where to export traces, metrics and logs.
+///
+/// The server and the relay take the equivalent settings straight from the
+/// standard `OTEL_*` environment variables; the daemon's config is fleet-wide
+/// and server-managed, so it gets a config section instead and translates it
+/// with [`OpenTelemetryConfig::apply_env`].
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenTelemetryConfig {
+    #[schemars(description = "OTLP/HTTP collector base URL, e.g. http://collector:4318. \
+                              Unset means nothing is exported.")]
+    #[serde(default)]
+    pub server: Option<String>,
+    #[schemars(description = "Headers sent with every OTLP export")]
+    #[serde(default)]
+    pub headers: Vec<OtelHeader>,
+}
+
+impl OpenTelemetryConfig {
+    /// Publish this section as the standard `OTEL_*` environment variables the
+    /// exporter reads. A variable already present in the environment wins, so
+    /// an operator can override the server-managed config on one host.
+    ///
+    /// Call before starting any threads: the process environment is global
+    /// mutable state and reading it from another thread concurrently is UB.
+    pub fn apply_env(&self) {
+        let Some(endpoint) = self.server.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+            return;
+        };
+        let mut vars = vec![("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.to_string())];
+        if !self.headers.is_empty() {
+            // Comma-separated `k=v`, as the OTLP spec defines it.
+            vars.push((
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                self.headers
+                    .iter()
+                    .map(|h| format!("{}={}", h.key, h.value))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        for (key, value) in vars {
+            if std::env::var_os(key).is_some() {
+                continue;
+            }
+            // SAFETY: documented as pre-thread-spawn; no other thread can be
+            // reading the environment yet.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+}
+
 // ── Server (daemon → server connection) ─────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2315,6 +2378,8 @@ pub struct DaemonConfig {
     pub cloud: Vec<CloudConfig>,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub opentelemetry: OpenTelemetryConfig,
     #[serde(default)]
     pub server: DaemonServerConfig,
     #[serde(default)]

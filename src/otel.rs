@@ -31,6 +31,8 @@ use opentelemetry_sdk::{
 
 #[cfg(feature = "otel-axum")]
 pub mod http;
+#[cfg(feature = "otel-rocket")]
+pub mod rocket;
 
 use crate::metrics;
 
