@@ -20,6 +20,9 @@ server = [
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The config types describe themselves, so a console can render a form for
+# them instead of a text box.
+schemars = { version = "1.2", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Server-only dependencies

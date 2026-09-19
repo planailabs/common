@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Shared Sentry configuration — used by server, runner, and any other crate
 /// that initialises Sentry from a TOML config file.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct SentryConfig {
     /// Sentry DSN. When unset, Sentry is disabled.
     #[serde(default)]

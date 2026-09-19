@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     pub cookie_secret: String,
@@ -17,7 +17,7 @@ pub struct AuthConfig {
     pub providers: Vec<OidcProviderConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OidcProviderConfig {
     /// URL slug used in auth routes: /auth/{slug}, /auth/{slug}/callback

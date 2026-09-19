@@ -20,7 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 /// A configured LLM model entry (model pickers, validator pickers, spend
 /// dashboard pricing).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LlmModelEntry {
     /// Human-readable display name shown in the dropdown.
     pub name: String,
