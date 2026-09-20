@@ -6,6 +6,24 @@ use uuid::Uuid;
 pub struct OrgMembership {
     pub org_id: Uuid,
     pub role: String, // "admin", "write", "read"
+    /// Permissions granted on top of the role, for things that are not a
+    /// point on the read/write scale — paying the bill, buying a service.
+    /// An organization admin has all of them without being listed here.
+    ///
+    /// Defaulted so a session stored before permissions existed still loads.
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+impl OrgMembership {
+    /// A membership with no permissions beyond its role.
+    pub fn new(org_id: Uuid, role: impl Into<String>) -> Self {
+        Self {
+            org_id,
+            role: role.into(),
+            permissions: Vec::new(),
+        }
+    }
 }
 
 /// Lightweight user context extracted from the OIDC session and stored
@@ -34,6 +52,28 @@ impl WebUser {
         self.org_memberships
             .iter()
             .filter(|m| m.role == "admin" || m.role == "write")
+            .map(|m| m.org_id)
+            .collect()
+    }
+
+    /// Whether the user holds a named permission in an organization.
+    ///
+    /// Admins hold everything: an organization's admin can already grant
+    /// themselves the permission, so withholding it would only be theatre.
+    pub fn has_org_permission(&self, org_id: &Uuid, permission: &str) -> bool {
+        self.is_org_admin(org_id)
+            || self.org_memberships.iter().any(|m| {
+                m.org_id == *org_id && m.permissions.iter().any(|p| p == permission)
+            })
+    }
+
+    /// Organizations where the user holds a permission.
+    pub fn permitted_org_ids(&self, permission: &str) -> Vec<Uuid> {
+        self.org_memberships
+            .iter()
+            .filter(|m| {
+                m.role == "admin" || m.permissions.iter().any(|p| p == permission)
+            })
             .map(|m| m.org_id)
             .collect()
     }
